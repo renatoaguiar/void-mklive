@@ -117,7 +117,7 @@ PLATFORM="${PLATFORM%-PLATFORMFS*}"
 
 # Be absolutely certain the platform is supported before continuing
 case "$PLATFORM" in
-    bananapi|beaglebone|cubieboard2|cubietruck|odroid-c2|odroid-u2|rpi|rpi2|rpi3|rpi4|GCP|pinebookpro|pinephone|*-musl);;
+    bananapi|beaglebone|cubieboard2|cubietruck|odroid-c2|odroid-u2|rpi|rpi2|rpi3|rpi4|GCP|pinebookpro|pinephone|vmm|*-musl);;
     *) die "The $PLATFORM is not supported, exiting..."
 esac
 
@@ -354,6 +354,40 @@ GCP*)
     # run_cmd_chroot commands
     cleanup_chroot
     ;;
+vmm*)
+    # Setup GRUB
+    mount_pseudofs
+    run_cmd_chroot "${ROOTFS}" "grub-install --target=i386-pc ${LOOPDEV}"
+    sed -i "s:page_poison=1:page_poison=1 console=ttyS0,115200 tsc=reliable tsc=noirqtime nosmp elevator=noop:" "${ROOTFS}/etc/default/grub"
+    run_cmd_chroot "${ROOTFS}" update-grub
+
+    # Turn off the agetty's since we can't use them anyway
+    #rm -v "${ROOTFS}/etc/runit/runsvdir/default/agetty-tty"*
+
+    # Setup Guest services
+    #for _service in dhcpcd sshd agetty-ttyS0 nanoklogd socklog-unix; do
+    #    run_cmd_chroot "${ROOTFS}" "ln -sv /etc/sv/$_service /etc/runit/runsvdir/default/$_service"
+    #done
+
+    # Set the Timezone
+    run_cmd_chroot "${ROOTFS}" "ln -svf /usr/share/zoneinfo/UTC /etc/localtime"
+
+    # Generate glibc-locales if necessary (this is a noop on musl)
+    if [ "$PLATFORM" = vmm ] ; then
+        run_cmd_chroot "${ROOTFS}" "xbps-reconfigure -f glibc-locales"
+    fi
+
+    # Remove SSH host keys (these will get rebuilt on first boot)
+    rm -f "${ROOTFS}/etc/ssh/*key*"
+    rm -f "${ROOTFS}/etc/ssh/moduli"
+
+    # Force the hostname since this isn't read from DHCP
+    echo void-vmm > "${ROOTFS}/etc/hostname"
+
+    # Cleanup the chroot from anything that was setup for the
+    # run_cmd_chroot commands
+    cleanup_chroot
+    ;;
 esac
 
 # Release all the mounts, deconfigure the loop device, and remove the
@@ -381,6 +415,13 @@ case "$PLATFORM" in
         # uploaded, we remove the original disk image.
         rm disk.raw
         info_msg "Sucessfully created ${FILENAME%.img}.tar.gz image."
+        ;;
+    vmm*)
+        info_msg "Converting image to qcow2"
+        mv "$FILENAME" "${FILENAME}.raw"
+        qemu-img convert -O qcow2 "${FILENAME}.raw" "$FILENAME"
+        rm "${FILENAME}.raw"
+        info_msg "Successfully created $FILENAME image."
         ;;
     *)
         info_msg "Compressing $FILENAME with xz (level 9 compression)"
